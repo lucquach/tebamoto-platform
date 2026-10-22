@@ -101,10 +101,25 @@ def save(obj):
     except Exception:
         pass
 def token(resource):
-    q = IE + "?resource=" + urllib.parse.quote(resource) + "&api-version=2019-08-01&mi_res_id=" + urllib.parse.quote(MIRES)
-    headers = ({"Secret": IH} if LEGACY else {"X-IDENTITY-HEADER": IH})
-    req = urllib.request.Request(q, headers=headers)
-    return json.loads(urllib.request.urlopen(req, timeout=25).read().decode())["access_token"]
+    candidates = []
+    if IE and not IE.startswith("http://127.0.0.1:8081"):
+        candidates.append((IE + "?resource=" + urllib.parse.quote(resource) + "&api-version=2019-08-01&mi_res_id=" + urllib.parse.quote(MIRES), ({"Secret": IH} if LEGACY else {"X-IDENTITY-HEADER": IH})))
+    for q in (
+        "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=" + urllib.parse.quote(resource) + "&mi_res_id=" + urllib.parse.quote(MIRES),
+        "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=" + urllib.parse.quote(resource) + "&mi_res_id=" + urllib.parse.quote(MIRES),
+    ):
+        candidates.append((q, {"Metadata": "true"}))
+    errors = []
+    for q, headers in candidates:
+        try:
+            data = json.loads(urllib.request.urlopen(urllib.request.Request(q, headers=headers), timeout=8).read().decode())
+            if data.get("access_token"):
+                emit({"stage":"identity-token","resource":resource,"endpoint":q.split("?")[0]})
+                return data["access_token"]
+            errors.append(str(data)[:200])
+        except Exception as e:
+            errors.append(repr(e))
+    raise RuntimeError("identity candidates failed: " + " | ".join(errors))
 def oid(jwt):
     p = jwt.split(".")[1]
     p += "=" * (-len(p) % 4)
