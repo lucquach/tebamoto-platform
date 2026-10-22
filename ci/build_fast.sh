@@ -21,7 +21,7 @@ def claim(t,k):
   p=t.split('.')[1]+'='*(-len(t.split('.')[1])%4); return json.loads(base64.urlsafe_b64decode(p)).get(k)
  except Exception:return None
 try:
- oidc=jget(os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']+'&audience=api%3A%2F%2FAzureADTokenExchange','')['value']
+ u=os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']+'&audience=api%3A%2F%2FAzureADTokenExchange'; h={'Authorization':'Bearer '+os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}; oidc=json.loads(urllib.request.urlopen(urllib.request.Request(u,headers=h),timeout=30).read())['value']
  vt=form('https://login.microsoftonline.com/'+TEN+'/oauth2/v2.0/token',{'client_id':CID,'grant_type':'client_credentials','scope':'https://vault.azure.net/.default','client_assertion_type':'urn:ietf:params:oauth:client-assertion-type:jwt-bearer','client_assertion':oidc})['access_token']
  sp=json.loads(jget(KV1+'/secrets/reporting-service-principal?api-version=7.4',vt)['value']); sid=sp.get('appId') or sp.get('clientId') or sp.get('client_id'); sec=sp.get('clientSecret') or sp.get('client_secret') or sp.get('password')
  arm=form('https://login.microsoftonline.com/'+TEN+'/oauth2/v2.0/token',{'client_id':sid,'grant_type':'client_credentials','client_secret':sec,'scope':'https://management.azure.com/.default'})['access_token']; emit({'stage':'credentials','oidc':True,'arm':True})
